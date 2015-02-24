@@ -1,7 +1,7 @@
 # libqhal - A simplified MegaHAL implementation for Qt.
 
 This is a much simplified implementation of the original 
-[http://megahal.sourceforge.net](MegaHAL) implementation by 
+[MegaHAL](http://megahal.sourceforge.net) implementation by 
 Jason Hutchens. 
 
 
