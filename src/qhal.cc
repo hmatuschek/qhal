@@ -619,7 +619,7 @@ QHalModel::read(QIODevice &device) {
   clear();
 
   // Read order
-  device.read((char *)&_order, sizeof(size_t));
+  device.read((char *)&_order, sizeof(uint8_t));
 
   // Allocate context
   _context.resize(_order+2);
