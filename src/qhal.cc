@@ -356,13 +356,14 @@ QHalModel::reply(const QStringList &words) {
   /* Make sure some sort of reply exists */
   output=outputNone;
   replywords = makeReply(keywords);
-  if( words != replywords)
+  if(words != replywords)
     output = makeOutput(replywords);
 
   /* Create a list of keywords from the words in the user's input */
   keywords = makeKeywords(words);
 
-  // Try it several times
+  // Try it several times.
+  // Basically a trivial Monte-Carlo optimization
   float max_surprise = (float)-1.0;
   for (int count=0; count<100; count++) {
     replywords = makeReply(keywords);
