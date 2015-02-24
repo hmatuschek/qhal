@@ -3,6 +3,8 @@
 #include <QString>
 #include <cmath>
 #include <QDebug>
+#include <QBuffer>
+#include <QIODevice>
 
 
 /* ******************************************************************************************** *
@@ -23,21 +25,25 @@ toWords(const QString text, QStringList &words) {
  * Implementation of QHalTree
  * ******************************************************************************************** */
 QHalTree::QHalTree()
-  : _symbol(0), _usage(0), _count(0), _branches()
+  : _symbol(0), _usage(0), _count(0), _symbols(), _branches()
 {
   // pass...
 }
 
 QHalTree::QHalTree(size_t symbol)
-  : _symbol(symbol), _usage(0), _count(0), _branches()
+  : _symbol(symbol), _usage(0), _count(0), _symbols(), _branches()
 {
   // pass...
 }
 
+QHalTree::QHalTree(QIODevice &device)
+  : _symbol(0), _usage(0), _count(0), _symbols(), _branches()
+{
+  read(device);
+}
+
 QHalTree::~QHalTree() {
-  for (int i=0; i<_branches.size(); i++) {
-    delete _branches[i];
-  }
+  clear();
 }
 
 QHalTree *
@@ -51,19 +57,19 @@ QHalTree::addSymbol(size_t symbol) {
 
 QHalTree *
 QHalTree::findSymbolAdd(size_t symbol) {
-  for (int i=0; i<_branches.size(); i++) {
-    if (symbol == _branches[i]->symbol()) { return _branches[i]; }
-  }
+  QHash<size_t, size_t>::iterator item = _symbols.find(symbol);
+  if (item != _symbols.end()) { return _branches[item.value()]; }
   QHalTree *node = new QHalTree(symbol);
+  size_t idx = _branches.size();
   _branches.append(node);
+  _symbols[symbol] = idx;
   return node;
 }
 
 QHalTree *
 QHalTree::findSymbol(size_t symbol) {
-  for (int i=0; i<_branches.size(); i++) {
-    if (symbol == _branches[i]->symbol()) { return _branches[i]; }
-  }
+  QHash<size_t, size_t>::iterator item = _symbols.find(symbol);
+  if (item != _symbols.end()) { return _branches[item.value()]; }
   return 0;
 }
 
@@ -102,6 +108,56 @@ QHalTree::branch(size_t idx) const {
   return _branches[idx];
 }
 
+void
+QHalTree::read(QIODevice &device) {
+  // First, clear tree
+  clear();
+
+  // Read symbol
+  device.read((char *)&_symbol, sizeof(size_t));
+  // Read usage
+  device.read((char *)&_usage, sizeof(size_t));
+  // Read count
+  device.read((char *)&_count, sizeof(size_t));
+
+  // Read branches
+  size_t n=0; device.read((char *)&n, sizeof(size_t));
+  for (int i=0; i<n; i++) {
+    QHalTree *node = new QHalTree(device);
+    _branches.push_back(node);
+    _symbols[node->symbol()] = i;
+  }
+}
+
+void
+QHalTree::serialize(QIODevice &device) {
+  // Serialize symbol
+  device.write((char *)&_symbol, sizeof(size_t));
+  // Serialize usage
+  device.write((char *)&_usage, sizeof(size_t));
+  // Serialize count
+  device.write((char *)&_count, sizeof(size_t));
+
+  // serialize branch count
+  size_t n = _branches.size();
+  device.write((char *)&n, sizeof(size_t));
+  // serialize branches
+  for (int i=0; i<n; i++) {
+    _branches[i]->serialize(device);
+  }
+}
+
+void
+QHalTree::clear() {
+  // Free all branches
+  for (int i=0; i<_branches.size(); i++) {
+    delete _branches[i];
+  }
+  // clear data structures
+  _branches.clear(); _symbols.clear();
+  _symbol = 0; _usage = 0; _count = 0;
+}
+
 
 
 /* ******************************************************************************************** *
@@ -112,6 +168,12 @@ QHalDict::QHalDict()
 {
   _symbols.append("<ERROR>");
   _symbols.append("<FIN>");
+}
+
+QHalDict::QHalDict(QIODevice &device)
+  : _table(), _symbols()
+{
+  read(device);
 }
 
 QHalDict::~QHalDict() {
@@ -148,6 +210,49 @@ QHalDict::search(size_t symbol) const {
   return _symbols[symbol];
 }
 
+void
+QHalDict::read(QIODevice &device) {
+  // Clear table.
+  clear();
+  // Read number of elements
+  size_t n=0; device.read((char *)&n, sizeof(size_t));
+  // Read elements
+  for (int symbol=0; symbol<n; symbol++) {
+    // Read string size
+    size_t s=0; device.read((char *)&s, sizeof(size_t));
+    // Read encoded string
+    QByteArray enc = device.read(s);
+    // Get string
+    QString str = QString::fromLocal8Bit(enc);
+    // store
+    _table.insert(str, symbol);
+    _symbols.push_back(str);
+  }
+}
+
+void
+QHalDict::serialize(QIODevice &device) {
+  // serialize number of elements
+  size_t n = _symbols.size();
+  device.write((char *)&n, sizeof(size_t));
+  // serialize strings
+  for (size_t i=0; i<_symbols.size(); i++) {
+    // Encode string in local 8bit form (i.e. UTF-8)
+    QByteArray tmp = _symbols[i].toLocal8Bit();
+    // Get size
+    n = tmp.size();
+    // Store size
+    device.write((char *)&n, sizeof(size_t));
+    // Store encoded string
+    device.write(tmp.data(), n);
+  }
+}
+
+void
+QHalDict::clear() {
+  _table.clear();
+  _symbols.clear();
+}
 
 
 /* ******************************************************************************************** *
@@ -157,6 +262,12 @@ QHalModel::QHalModel(uint8_t order)
   : _order(order), _forward(), _backward(), _context(_order+2, 0)
 {
   // pass...
+}
+
+QHalModel::QHalModel(QIODevice &device)
+  : _order(0), _forward(), _backward(), _context()
+{
+  read(device);
 }
 
 QHalModel::~QHalModel() {
@@ -191,7 +302,7 @@ QHalModel::reply(const QString &sentence) {
 
 
 void
-QHalModel::reset_context() {
+QHalModel::resetContext() {
   for (int i=0; i<=_order; i++) { _context[i] = 0; }
 }
 
@@ -204,7 +315,7 @@ QHalModel::learn(const QStringList &sentence) {
 
   /* Train the model in the forwards direction.  Start by initializing
    * the context of the model. */
-  reset_context();
+  resetContext();
   _context[0] = &_forward;
   QListIterator<QString> word(sentence); word.toFront();
   while (word.hasNext()) {
@@ -218,7 +329,7 @@ QHalModel::learn(const QStringList &sentence) {
 
   /* Train the model in the backwards direction.  Start by initializing
    * the context of the model. */
-  reset_context();
+  resetContext();
   _context[0] = &_backward;
   word = sentence; word.toBack();
   while (word.hasPrevious()) {
@@ -232,6 +343,7 @@ QHalModel::learn(const QStringList &sentence) {
   // done.
   return;
 }
+
 
 QString
 QHalModel::reply(const QStringList &words) {
@@ -266,11 +378,13 @@ QHalModel::reply(const QStringList &words) {
 
 
 QStringList
-QHalModel::makeKeywords(const QStringList &words) {
+QHalModel::makeKeywords(const QStringList &tokens) {
   QStringList keys;
   // Extract all words in dictionary (skipping non-words).
-  foreach (QString word, words) {
-    if (_dictionary.contains(word) && word[0].isLetter()) {
+  foreach (QString word, tokens) {
+    if (word.isEmpty()) { continue; }
+    if (! word[0].isLetter()) { continue; }
+    if (_dictionary.contains(word)) {
       keys.push_back(word);
     }
   }
@@ -285,7 +399,7 @@ QHalModel::makeReply(const QStringList &keywords) {
   bool start=true;
 
   /* Start off by making sure that the model's context is empty. */
-  reset_context();
+  resetContext();
   _context[0] = &_forward;
 
   /* Generate the reply in the forward direction. */
@@ -307,7 +421,7 @@ QHalModel::makeReply(const QStringList &keywords) {
   }
 
   /* Start off by making sure that the model's context is empty. */
-  reset_context();
+  resetContext();
   _context[0] = &_backward;
 
   /* Re-create the context of the model from the current reply
@@ -335,6 +449,7 @@ QHalModel::makeReply(const QStringList &keywords) {
 
   return(replies);
 }
+
 
 size_t
 QHalModel::seed(const QStringList &keywords) {
@@ -365,6 +480,7 @@ QHalModel::seed(const QStringList &keywords) {
   return symbol;
 }
 
+
 size_t
 QHalModel::babble(const QStringList &keywords, const QStringList &replies) {
   QHalTree *node = 0;
@@ -381,11 +497,10 @@ QHalModel::babble(const QStringList &keywords, const QStringList &replies) {
   /* Choose a symbol at random from this context. */
   int i = rand()%node->size();
   int count = rand()%node->usage();
-  while (count>=0) {
-    /* If the symbol occurs as a keyword, then use it.  Only use an
-     * auxilliary keyword if a normal keyword has already been used. */
-    symbol = node->branch(i)->symbol();
 
+  while (count>=0) {
+    /* If the symbol occurs as a keyword, then use it. */
+    symbol = node->branch(i)->symbol();
     if ( keywords.contains(_dictionary.search(symbol)) &&
          !replies.contains(_dictionary.search(symbol)) ) {
       break;
@@ -409,7 +524,7 @@ QHalModel::evaluateReply(const QStringList &keys, const QStringList &words) {
 
   if (words.size()<=0) return 0.0 ;
 
-  reset_context();
+  resetContext();
   _context[0] = &_forward;
   for (int i=0; i<words.size(); ++i) {
     symbol = _dictionary.search(words[i]);
@@ -433,7 +548,7 @@ QHalModel::evaluateReply(const QStringList &keys, const QStringList &words) {
     updateContext(symbol);
   }
 
-  reset_context();
+  resetContext();
   _context[0] = &_backward;
   for (int k=(words.size()-1); k>=0; --k) {
     symbol = _dictionary.search(words[k]);
@@ -482,6 +597,7 @@ QHalModel::update(size_t symbol) {
   return;
 }
 
+
 void
 QHalModel::updateContext(size_t symbol) {
   /* Update all of the models in the current context with the specified
@@ -495,3 +611,47 @@ QHalModel::updateContext(size_t symbol) {
   return;
 }
 
+
+void
+QHalModel::read(QIODevice &device) {
+  // Clear model
+  clear();
+
+  // Read order
+  device.read((char *)&_order, sizeof(size_t));
+
+  // Allocate context
+  _context.resize(_order+2);
+  resetContext();
+
+  // read forward tree
+  _forward.read(device);
+
+  // read backward tree
+  _backward.read(device);
+
+  // read dictionary
+  _dictionary.read(device);
+}
+
+
+void
+QHalModel::serialize(QIODevice &device) {
+  // Serialize order
+  device.write((char *)&_order, sizeof(uint8_t));
+  // serialize forward tree.
+  _forward.serialize(device);
+  // serialize backward tree.
+  _backward.serialize(device);
+  // serialize dictionary.
+  _dictionary.serialize(device);
+}
+
+
+void
+QHalModel::clear() {
+  resetContext();
+  _forward.clear();
+  _backward.clear();
+  _dictionary.clear();
+}
